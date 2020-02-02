@@ -1,0 +1,193 @@
+#!/bin/bash
+
+# System Args
+SILENT=$1
+
+# Repository configurations
+REPO_DIR="Trident"
+REPO_TYPE="binary"
+REPO_ARCH64="amd64"
+REPO_ARCH32="i386"
+WEBDIR="/var/www/html"
+LIST_DIR="/etc/apt/sources.list.d"
+REPO_FILE="trident.list"
+
+HOST="127.0.0.1"  # Replace with whatever host you are running or adding
+
+# TEMPORARY FILE - meaning: it's gonna get deleted by the user sooner or later
+TEMP_OUTPUT="rpn_temp_output.txt"
+
+# Colors
+gs="\033[32m"
+rs="\033[31m"
+ys="\033[33m"
+ws="\033[37m"
+bs="\033[34m"
+ce="\033[0m"
+
+# Bold Colors
+gsb="\033[01;32m"
+rsb="\033[01;31m"
+ysb="\033[01;33m"
+wsb="\033[01;37m"
+bsb="\033[01;34m"
+ceb="\033[00m"
+
+# Symbols
+plus="${gs}[+]${ce} "
+minus="${rs}[-]${ce} "
+astk="${bs}[*]${ce} "
+error="${rsb}[Error]:${ceb} "
+info="${ys}[I]${ce} "
+# **************************************************************************************************************************
+# Check if the user is running this script as root
+# **************************************************************************************************************************
+if [ "$(id -u)" != "0" ]; then
+	echo -e "\n${error}${wsb} This script must be run as root - try 'sudo rpn'...${ceb}\n"
+	exit 1
+fi
+
+# **************************************************************************************************************************
+# Functions
+# **************************************************************************************************************************
+function write_temp() {
+	file=$1
+	text=$2
+
+	if [ -f ${file} ]; then
+		echo ${text} >> ${file}
+	else
+		touch "${HOME}/${file}" && echo ${text} >> ${file}
+	fi
+}
+
+function print() {
+	text=$1
+	type=$2
+
+	if [ $(expr length "${text}") == 0 ] || [ "${text}" == "" ]; then
+		echo -e "\n${error}${wsb}Invalid string - Must be greater than 0 in length...${ceb}\n"
+		exit 1
+	else
+		if [[ ${type} == "error" ]]; then
+			echo -e "\n${error}${wsb}${text}${ceb}\n"
+		elif [[ ${type} == "success" ]]; then
+			echo -e "${plus}${ws}${text}${ce}"
+		elif [[ ${type} == "casual" ]]; then
+			echo -e "${astk}${ws}${text}${ce}"
+		elif [[ ${type} == "info" ]]; then
+			echo -e "${info}${ws}${text}${ce}"
+		fi
+	fi
+}
+# *** Checks for the apache2 web directory ***
+function check_webdir() {
+	# Basis: check for the webdirectory in the /var directory
+	# The full path is /var/www/html. If that directory does
+	# not exist, then show the user how they can obtain that
+	# directory: apt install apache2
+	if [ -d ${WEBDIR} ]; then
+		if [[ ${SILENT} == "silent" ]]; then
+			write_temp ${TEMP_OUTPUT} "[UPDATE]: web directory ${WEBDIR} exists..."
+		else
+			echo -e "${plus}${ws}Web directory ${WEBDIR} exists...${ce}"
+		fi
+	else
+		# This is where the hint comes into play
+		print "The main web directory \"${WEBDIR}\" could not be found, here is a possible solution:" info
+		echo -e "${wsb}- Try running this command:${ysb} sudo apt install apache2${ceb}\n"
+		exit 1
+	fi
+}
+# *** Checks and generates the trident repository profile ***
+function check_repo_details() {
+	file="${REPO_DIR}/${REPO_FILE}"
+
+	if [ -f ${file} ]; then
+		if [[ `grep -r ${HOST} ${file}` == `cat ${file} | cut -d'/' -f3` ]]; then
+			print "Hostname exists in list profile: ${file} - Match confirmed..." casual
+		else
+			print "Hostname does not match with the one set in this file, details:" error
+			echo -e "\n${wsb}This files hostname:${ysb} ${HOST}${ceb}\n"
+			echo -e "\n${wsb}The source (list) file hostname:${ysb} `cat ${file} | cut -d'/' -f3`${ceb}\n"
+			exit 1
+		fi
+	else
+		print "The trident repository '.list' file does not exist in ${REPO_DIR}, generating it..." info
+		touch ${file}
+		# Write the trident repository data to the source list
+		echo "deb [trusted=yes] http://${HOST}/${REPO_DIR} ${REPO_TYPE}/${REPO_ARCH64}" > ${file}
+
+		if [[ $? == 1 ]]; then
+			print "Could not write to trident list profile, do you have the priviledges? Try 'sudo rpn'..." error
+			exit 1
+		fi
+	fi
+}
+# *** Sub-Function to check_repo_details ***
+function gen_repo_listfile() {
+	# First, check if the file exists before writing
+	if [ -f "${REPO_DIR}/${REPO_FILE}" ]; then
+		print "The repository list file exists in ${REPO_DIR}, checking list details..." casual
+		check_repo_details	# Also generates the profile
+	fi
+}
+# *** Generate package list ***
+function gen_package_listprofile() {
+	cd "${WEBDIR}/${REPO_DIR}"
+
+	print "Generating package list archive, please wait..."
+	dpkg-scanpackages "${REPO_TYPE}/${REPO_ARCH64}" | gzip -9c > "${REPO_TYPE}/${REPO_ARCH64}/Packages.gz"
+
+	if [[ $? == 1 ]]; then
+		print "There was an error while generating the package list archive..." error
+		exit 1
+	else
+		print "Trident package list archive generation successful!" success
+	fi
+}
+# *** Main driver function ***
+function main() {
+	# Check for the trident directories
+	check_webdir
+
+	cd ${WEBDIR}
+
+	if [ -d ${REPO_DIR} ]; then
+		print "Main repository directory exists..." casual
+		if [[ -d "${REPO_DIR}/${REPO_TYPE}" ]]; then
+			print "Repository type is: ${REPO_TYPE}..." casual
+			if [[ -d "${REPO_DIR}/${REPO_TYPE}/${REPO_ARCH64}" ]]; then
+				print "Repostitory set arch is: ${REPO_ARCH64}..." casual
+
+				print "Trident repository directory exists, moving to package generation..." casual
+				gen_package_listprofile
+
+				print "Generating Trident repository source list profile in ${LIST_DIR}/${REPO_FILE}..." casual
+				gen_repo_listfile
+
+				print "Updating system, please wait..." info
+
+				if [[ ${SILENT} == "silent" ]]; then
+					apt update -qq
+				else
+					apt update
+
+					echo -e "\n${plus}${ws} All done, the repository is ready for use...${ce}\n"
+				fi
+			else
+				print "Arch (x86/x64) directory does not exist in ${WEBDIR}..." error
+				exit 1
+			fi
+		else
+			print "Repository type (binary/source) does not exist in ${WEBDIR}..." error 
+			exit 1
+		fi
+	else
+		print "The main Trident web repository directory (Trident) does not exist in ${WEBDIR}..." error
+		exit 1
+	fi
+}
+
+# Run the main driver function
+main
